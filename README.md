@@ -215,4 +215,69 @@ SELECT category,
 ```
 
 RANK() preserves equal rankings when multiple products have the same total quantity sold.
-As a result, a tie at rank 3 can return more than three rows for a category, which is intentional ranking behavior
+As a result, a tie at rank 3 can return more than three rows for a category, which is intentional ranking behavior.
+
+### Suggested Indexes
+```
+CREATE INDEX idx_orders_created_at_id
+    ON orders(created_at, id);
+
+CREATE INDEX idx_order_items_order_product_quantity
+    ON order_items(order_id, product_id, quantity);
+```
+
+### Index Justification
+orders(created_at, id) supports filtering the large orders table to the trailing 90 days window and provides the order ID used to join to order_items.
+order_items(order_id, product_id, quantity) supports the join from the filtered orders into the large order_items table and included the product and 
+quantity values used by the aggregation.
+
+The products table contains only a few thousand rows and already has a primary key index on id, 
+so an additional product lookup index is not necessary for this query.
+
+---
+
+## Part 1b - Fixing the Stock Race Condition
+The original read the update implementation is vulnerable because two concurrent requests can both read the same available stock before either request
+performs its update.
+Both requests may therefore decide theat inventory is sufficient and oversell the product.
+
+The API uses the following single atomic conditional update instead
+```
+UPDATE products
+   SET stock_quantity = stock_quantity - @quantity
+ WHERE id = @productId
+   AND stock_quantity >= @quantity;
+```
+
+The application checks the affected row count after executing the statement
+- 1 row affected: stock was successfully deducted.
+- 0 rows affected: the product did not have enough stock at the time of the update.
+
+This same approach is used by the order API inside a transaction
+
+## Docker Validation
+The repository includes a GitHub Actions workflow that validates the Docker packaging on a Linux runner.
+
+The workflow:
+- builds the Docker image,
+- starts the container on port 8080,
+- passes API_KEY through an environment variable,
+- verifies valid and invalid API-key behavior,
+- exercises product lookup and category filtering,
+- verifies an out-of-stock order returns 409,
+- creates a valid order,
+- verifies replaying the same idempotency key returns 200.
+
+Assumptions and Production Considerations
+- SQLite was chosen to keep the assessment self-contained and easy to run.
+- The database reset on startup is intentional so the required seed state is restored for every container run.
+- In production, the same transaction and atomic conditional-update approach could be used with a production relational database such as PostgreSQL or SQL Server.
+- The in-memory webhook queue is appropriate for this assessment, but a durable queue or transactional outbox would be preferable in production.
+- The API-key mechanism is intentionally minimal because the assessment does not require a production-grade authentication system.
+
+## AI Usage
+I used ChatGPT as a development assistant to discuss API strucutre, validation, database transations, concurrency safe stock updates, idempotency, webhook retry / backoff design,
+Docker packaging, and README review.
+
+I reviewed, adapted, implemented, and tested the resulting solution and verified the Docker build and API behavior through GitHub Actions.
+
