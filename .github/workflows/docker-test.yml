@@ -1,0 +1,169 @@
+name: Docker Validation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  docker-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Docker version
+        run: docker version
+
+      - name: Build Docker image
+        run: docker build -t submission .
+
+      - name: Run Docker container
+        run: |
+          docker run -d \
+            --name productcatalog \
+            -p 8080:8080 \
+            -e API_KEY=test-key \
+            submission
+
+      - name: Wait for API to start
+        run: |
+          for i in {1..30}; do
+            if curl --silent --fail \
+              -H "X-API-Key: test-key" \
+              http://localhost:8080/api/products > /dev/null; then
+              echo "API is ready."
+              exit 0
+            fi
+
+            echo "Waiting for API..."
+            sleep 2
+          done
+
+          echo "API failed to start."
+          docker logs productcatalog
+          exit 1
+
+      - name: Test valid API key
+        run: |
+          STATUS=$(curl --silent \
+            --output response.json \
+            --write-out "%{http_code}" \
+            -H "X-API-Key: test-key" \
+            "http://localhost:8080/api/products?page=1&size=10")
+
+          cat response.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "200"
+
+      - name: Test invalid API key
+        run: |
+          STATUS=$(curl --silent \
+            --output response.json \
+            --write-out "%{http_code}" \
+            -H "X-API-Key: wrong-key" \
+            "http://localhost:8080/api/products")
+
+          cat response.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "401"
+
+      - name: Test category filter
+        run: |
+          STATUS=$(curl --silent \
+            --output response.json \
+            --write-out "%{http_code}" \
+            -H "X-API-Key: test-key" \
+            "http://localhost:8080/api/products?page=1&size=10&category=Electronics")
+
+          cat response.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "200"
+
+      - name: Test out-of-stock order
+        run: |
+          STATUS=$(curl --silent \
+            --output response.json \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: test-key" \
+            -H "Idempotency-Key: out-of-stock-test" \
+            -d '{
+              "customerEmail": "test@example.com",
+              "items": [
+                {
+                  "productId": 3,
+                  "quantity": 1
+                }
+              ]
+            }' \
+            http://localhost:8080/api/orders)
+
+          cat response.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "409"
+
+      - name: Test order creation
+        run: |
+          STATUS=$(curl --silent \
+            --output first-order.json \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: test-key" \
+            -H "Idempotency-Key: github-action-order-001" \
+            -d '{
+              "customerEmail": "jane@example.com",
+              "items": [
+                {
+                  "productId": 1,
+                  "quantity": 2
+                }
+              ]
+            }' \
+            http://localhost:8080/api/orders)
+
+          cat first-order.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "201"
+
+      - name: Test idempotency
+        run: |
+          STATUS=$(curl --silent \
+            --output second-order.json \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: test-key" \
+            -H "Idempotency-Key: github-action-order-001" \
+            -d '{
+              "customerEmail": "jane@example.com",
+              "items": [
+                {
+                  "productId": 1,
+                  "quantity": 2
+                }
+              ]
+            }' \
+            http://localhost:8080/api/orders)
+
+          cat second-order.json
+          echo "HTTP status: $STATUS"
+
+          test "$STATUS" = "200"
+
+      - name: Show container logs
+        if: always()
+        run: docker logs productcatalog || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f productcatalog || true

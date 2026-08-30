@@ -1,0 +1,17 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+WORKDIR /app
+
+COPY . .
+
+RUN dotnet restore
+
+RUN dotnet publish -c Release -o /app/publish
+
+WORKDIR /app/publish
+
+ENV ASPNETCORE_URLS=http://+:8080
+
+EXPOST 8080
+
+ETNRYPOINT ["dotnet", "ProductCatalog.dll"]
