@@ -12,6 +12,6 @@ WORKDIR /app/publish
 
 ENV ASPNETCORE_URLS=http://+:8080
 
-EXPOST 8080
+EXPOSE 8080
 
-ETNRYPOINT ["dotnet", "ProductCatalog.dll"]
+ENTRYPOINT ["dotnet", "ProductCatalog.dll"]
